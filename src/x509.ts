@@ -19,21 +19,18 @@ export async function buildRootCert() {
         signingAlgorithm: alg,
         keys,
         extensions: [
-            new x509.BasicConstraintsExtension(true, undefined, true),
-            new x509.KeyUsagesExtension(
-                x509.KeyUsageFlags.cRLSign | x509.KeyUsageFlags.keyCertSign,
+            new x509.BasicConstraintsExtension(true, 2, true),
+            new x509.BasicConstraintsExtension(true, 2, true),
+            new x509.ExtendedKeyUsageExtension(
+                ["1.2.3.4.5.6.7", "2.3.4.5.6.7.8"],
                 true
             ),
-            await x509.SubjectKeyIdentifierExtension.create(
-                keys.publicKey,
-                false,
-                crypto
+            new x509.KeyUsagesExtension(
+                x509.KeyUsageFlags.cRLSign |
+                x509.KeyUsageFlags.keyCertSign,
+                true
             ),
-            await x509.AuthorityKeyIdentifierExtension.create(
-                keys.publicKey,
-                false,
-                crypto
-            ),
+            await x509.SubjectKeyIdentifierExtension.create(keys.publicKey, false, crypto),
         ],
         serialNumber: DateTime.now().toMillis().toString(),
         name: "CN=Test",
@@ -52,30 +49,29 @@ export async function buildChildCert(rootCert: {
     cert: x509.X509Certificate,
     keys: CryptoKeyPair
 }) {
-    const intermediateKeys = await crypto.subtle.generateKey(alg, true, ["sign", "verify"]);
-
-    const intermediateCert = await x509.X509CertificateGenerator.create({
-        signingKey: rootCert.keys.privateKey,
-        publicKey: intermediateKeys.publicKey,
-        signingAlgorithm: alg,
-        serialNumber: DateTime.now().toMillis().toString(),
-        subject: "CN=Intermediate",
-        issuer: rootCert.cert.subject,
-        notBefore: DateTime.now().minus({ hour: 1 }).toJSDate(),
-        notAfter: DateTime.now().plus({ day: 1 }).toJSDate(),
-    }, crypto);
-
-    const leafKeys = await crypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+    const leafKeys = await crypto.subtle.generateKey({
+        ...alg,
+        name: "RSA-OAEP", // We should use RSA-OAEP for encryption
+    }, true, ["encrypt", "decrypt"]);
 
     const leafCert = await x509.X509CertificateGenerator.create({
-        signingKey: intermediateKeys.privateKey,
+        signingKey: rootCert.keys.privateKey,
         publicKey: leafKeys.publicKey,
         signingAlgorithm: alg,
         serialNumber: DateTime.now().toMillis().toString(),
         subject: "CN=RouterCert",
-        issuer: intermediateCert.subject,
+        issuer: rootCert.cert.subject,
         notBefore: DateTime.now().minus({ hour: 1 }).toJSDate(),
         notAfter: DateTime.now().plus({ day: 1 }).toJSDate(),
+        extensions: [
+            new x509.KeyUsagesExtension(
+                x509.KeyUsageFlags.dataEncipherment,
+                true,
+            ),
+            new x509.BasicConstraintsExtension(false),
+            await x509.AuthorityKeyIdentifierExtension.create(rootCert.cert, false, crypto),
+            await x509.SubjectKeyIdentifierExtension.create(leafKeys.publicKey, false, crypto),
+        ]
     }, crypto);
 
     return { cert: leafCert, keys: leafKeys };
